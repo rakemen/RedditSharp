@@ -1,12 +1,13 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Security.Authentication;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using RedditSharp.Extensions;
 
 namespace RedditSharp.Things
 {
@@ -16,12 +17,23 @@ namespace RedditSharp.Things
         private const string EditUserTextUrl = "/api/editusertext";
         private const string RemoveUrl = "/api/remove";
         private const string DelUrl = "/api/del";
+        private const string ApproveUrl = "/api/approve";
         private const string SetAsReadUrl = "/api/read_message";
+        private const string IgnoreReportsUrl = "/api/ignore_reports";
+        private const string UnIgnoreReportsUrl = "/api/unignore_reports";
 
         [JsonIgnore]
         private Reddit Reddit { get; set; }
         [JsonIgnore]
         private IWebAgent WebAgent { get; set; }
+
+        public async Task<Comment> InitAsync(Reddit reddit, JToken json, IWebAgent webAgent, Thing sender)
+        {
+            var data = await CommonInitAsync(reddit, json, webAgent, sender);
+            await ParseCommentsAsync(reddit, json, webAgent, sender);
+            await JsonConvert.PopulateObjectAsync(data.ToString(), this, reddit.JsonSerializerSettings);
+            return this;
+        }
 
         public Comment Init(Reddit reddit, JToken json, IWebAgent webAgent, Thing sender)
         {
@@ -30,21 +42,14 @@ namespace RedditSharp.Things
             JsonConvert.PopulateObject(data.ToString(), this, reddit.JsonSerializerSettings);
             return this;
         }
-        public async Task<Comment> InitAsync(Reddit reddit, JToken json, IWebAgent webAgent, Thing sender)
-        {
-            var data = CommonInit(reddit, json, webAgent, sender);
-            await ParseCommentsAsync(reddit, json, webAgent, sender);
-            await Task.Factory.StartNew(() => JsonConvert.PopulateObject(data.ToString(), this, reddit.JsonSerializerSettings));
-            return this;
-        }
 
         private JToken CommonInit(Reddit reddit, JToken json, IWebAgent webAgent, Thing sender)
         {
-            base.Init(reddit, webAgent, json);
+            Init(reddit, webAgent, json);
             var data = json["data"];
             Reddit = reddit;
             WebAgent = webAgent;
-            this.Parent = sender;
+            Parent = sender;
 
             // Handle Reddit's API being horrible
             if (data["context"] != null)
@@ -53,6 +58,23 @@ namespace RedditSharp.Things
                 LinkId = context.Split('/')[4];
             }
          
+            return data;
+        }
+        private async Task<JToken> CommonInitAsync(Reddit reddit, JToken json, IWebAgent webAgent, Thing sender)
+        {
+            await InitAsync(reddit, webAgent, json);
+            var data = json["data"];
+            Reddit = reddit;
+            WebAgent = webAgent;
+            Parent = sender;
+
+            // Handle Reddit's API being horrible
+            if (data["context"] != null)
+            {
+                var context = data["context"].Value<string>();
+                LinkId = context.Split('/')[4];
+            }
+
             return data;
         }
 
@@ -64,7 +86,7 @@ namespace RedditSharp.Things
             if (replies != null && replies.Count() > 0)
             {
                 foreach (var comment in replies["data"]["children"])
-                    subComments.Add(new Comment().Init(reddit, comment, webAgent, sender));
+                    subComments.Add( new Comment().Init(reddit, comment, webAgent, sender));
             }
             Comments = subComments.ToArray();
         }
@@ -79,7 +101,7 @@ namespace RedditSharp.Things
                 foreach (var comment in replies["data"]["children"])
                     subComments.Add(await new Comment().InitAsync(reddit, comment, webAgent, sender));
             }
-            Comments = subComments.ToArray();            
+            Comments = subComments.ToArray();
         }
 
         [JsonProperty("author")]
@@ -108,6 +130,8 @@ namespace RedditSharp.Things
         public string LinkTitle { get; set; }
         [JsonProperty("num_reports")]
         public int? NumReports { get; set; }
+        [JsonProperty("stickied")]
+        public bool IsStickied { get; set; }
 
         [JsonIgnore]
         public IList<Comment> Comments { get; private set; }
@@ -127,7 +151,7 @@ namespace RedditSharp.Things
                     linkId = this.LinkId.Substring(index + 1);
                 }
 
-                return String.Format("{0}://{1}/r/{2}/comments/{3}/_/{4}",
+                return string.Format("{0}://{1}/r/{2}/comments/{3}/_/{4}",
                                      RedditSharp.WebAgent.Protocol, RedditSharp.WebAgent.RootDomain,
                                      this.Subreddit, this.Parent != null ? this.Parent.Id : linkId, this.Id);
             }
@@ -207,9 +231,24 @@ namespace RedditSharp.Things
             return data;
         }
 
+        public void Approve()
+        {
+            var data = SimpleAction(ApproveUrl);
+        }
+
         public void Del()
         {
             var data = SimpleAction(DelUrl);
+        }
+
+        public void IgnoreReports()
+        {
+            var data = SimpleAction(IgnoreReportsUrl);
+        }
+
+        public void UnIgnoreReports()
+        {
+            var data = SimpleAction(UnIgnoreReportsUrl);
         }
 
         public void Remove()

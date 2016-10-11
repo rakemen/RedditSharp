@@ -1,5 +1,5 @@
+using Newtonsoft.Json.Linq;
 using System;
-using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -8,7 +8,6 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Web;
-using Newtonsoft.Json.Linq;
 
 namespace RedditSharp
 {
@@ -39,15 +38,15 @@ namespace RedditSharp
         public enum RateLimitMode
         {
             /// <summary>
-            /// Limits requests to one every two seconds
+            /// Limits requests to one every two seconds (one if OAuth)
             /// </summary>
             Pace,
             /// <summary>
-            /// Restricts requests to five per ten seconds
+            /// Restricts requests to five per ten seconds (ten if OAuth)
             /// </summary>
             SmallBurst,
             /// <summary>
-            /// Restricts requests to thirty per minute
+            /// Restricts requests to thirty per minute (sixty if OAuth)
             /// </summary>
             Burst,
             /// <summary>
@@ -63,7 +62,7 @@ namespace RedditSharp
         public static string RootDomain { get; set; }
 
         /// <summary>
-        /// Used to make calls against Reddit's API using OAuth23
+        /// Used to make calls against Reddit's API using OAuth2
         /// </summary>
         public string AccessToken { get; set; }
 
@@ -76,32 +75,39 @@ namespace RedditSharp
         /// <summary>
         /// UTC DateTime of last request made to Reddit API
         /// </summary>
-        public DateTime LastRequest 
+        public DateTime LastRequest
         {
             get { return _lastRequest; }
         }
         /// <summary>
         /// UTC DateTime of when the last burst started
         /// </summary>
-        public DateTime BurstStart 
+        public DateTime BurstStart
         {
             get { return _burstStart; }
         }
         /// <summary>
         /// Number of requests made during the current burst 
         /// </summary>
-        public int RequestsThisBurst 
+        public int RequestsThisBurst
         {
             get { return _requestsThisBurst; }
         }
 
+        static WebAgent()
+        {
+            UserAgent = "";
+            RateLimit = RateLimitMode.Pace;
+            Protocol = "https";
+            RootDomain = "www.reddit.com";
+        }
 
         public virtual JToken CreateAndExecuteRequest(string url)
         {
             Uri uri;
             if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
             {
-                if (!Uri.TryCreate(String.Format("{0}://{1}{2}", Protocol, RootDomain, url), UriKind.Absolute, out uri))
+                if (!Uri.TryCreate(string.Format("{0}://{1}{2}", Protocol, RootDomain, url), UriKind.Absolute, out uri))
                     throw new Exception("Could not parse Uri");
             }
             var request = CreateGet(uri);
@@ -171,10 +177,11 @@ namespace RedditSharp
         [MethodImpl(MethodImplOptions.Synchronized)]
         protected virtual void EnforceRateLimit()
         {
+            var limitRequestsPerMinute = IsOAuth() ? 60.0 : 30.0;
             switch (RateLimit)
             {
                 case RateLimitMode.Pace:
-                    while ((DateTime.UtcNow - _lastRequest).TotalSeconds < 2)// Rate limiting
+                    while ((DateTime.UtcNow - _lastRequest).TotalSeconds < 60.0 / limitRequestsPerMinute)// Rate limiting
                         Thread.Sleep(250);
                     _lastRequest = DateTime.UtcNow;
                     break;
@@ -184,7 +191,7 @@ namespace RedditSharp
                         _burstStart = DateTime.UtcNow;
                         _requestsThisBurst = 0;
                     }
-                    if (_requestsThisBurst >= 5) //limit has been reached
+                    if (_requestsThisBurst >= limitRequestsPerMinute / 6.0) //limit has been reached
                     {
                         while ((DateTime.UtcNow - _burstStart).TotalSeconds < 10)
                             Thread.Sleep(250);
@@ -200,7 +207,7 @@ namespace RedditSharp
                         _burstStart = DateTime.UtcNow;
                         _requestsThisBurst = 0;
                     }
-                    if (_requestsThisBurst >= 30) //limit has been reached
+                    if (_requestsThisBurst >= limitRequestsPerMinute) //limit has been reached
                     {
                         while ((DateTime.UtcNow - _burstStart).TotalSeconds < 60)
                             Thread.Sleep(250);
@@ -217,7 +224,7 @@ namespace RedditSharp
         {
             EnforceRateLimit();
             bool prependDomain;
-            // IsWellFormedUriString returns true on Mono for some reason when using a string like "/api/me"
+            // IsWellFormedUristring returns true on Mono for some reason when using a string like "/api/me"
             if (Type.GetType("Mono.Runtime") != null)
                 prependDomain = !url.StartsWith("http://") && !url.StartsWith("https://");
             else
@@ -225,7 +232,7 @@ namespace RedditSharp
 
             HttpWebRequest request;
             if (prependDomain)
-                request = (HttpWebRequest)WebRequest.Create(String.Format("{0}://{1}{2}", Protocol, RootDomain, url));
+                request = (HttpWebRequest)WebRequest.Create(string.Format("{0}://{1}{2}", Protocol, RootDomain, url));
             else
                 request = (HttpWebRequest)WebRequest.Create(url);
             request.CookieContainer = Cookies;
@@ -234,12 +241,12 @@ namespace RedditSharp
                 var cookieHeader = Cookies.GetCookieHeader(new Uri("http://reddit.com"));
                 request.Headers.Set("Cookie", cookieHeader);
             }
-            if (RootDomain == "oauth.reddit.com")// use OAuth
+            if (IsOAuth())// use OAuth
             {
                 request.Headers.Set("Authorization", "bearer " + AccessToken);//Must be included in OAuth calls
             }
             request.Method = method;
-            request.UserAgent = UserAgent + " - with RedditSharp by /u/sircmpwn";
+            request.UserAgent = UserAgent + " - with RedditSharp by /u/meepster23";
             return request;
         }
 
@@ -253,12 +260,12 @@ namespace RedditSharp
                 var cookieHeader = Cookies.GetCookieHeader(new Uri("http://reddit.com"));
                 request.Headers.Set("Cookie", cookieHeader);
             }
-            if (RootDomain == "oauth.reddit.com")// use OAuth
+            if (IsOAuth())// use OAuth
             {
                 request.Headers.Set("Authorization", "bearer " + AccessToken);//Must be included in OAuth calls
             }
             request.Method = method;
-            request.UserAgent = UserAgent + " - with RedditSharp by /u/sircmpwn";
+            request.UserAgent = UserAgent + " - with RedditSharp by /u/meepster23";
             return request;
         }
 
@@ -307,6 +314,11 @@ namespace RedditSharp
             var raw = Encoding.UTF8.GetBytes(value);
             stream.Write(raw, 0, raw.Length);
             stream.Close();
+        }
+
+        private static bool IsOAuth()
+        {
+            return RootDomain == "oauth.reddit.com";
         }
     }
 }
